@@ -37,7 +37,13 @@ from qrcode.constants import ERROR_CORRECT_Q
 from PIL import Image, ImageDraw, ImageFont
 
 # ===== CAPTION SIZE — the ONLY knob for how big the ID text is =========
-CAPTION_FONT_SIZE = 24
+# Kept at the proportion you approved; the whole label is rendered at a
+# higher resolution (QR_TARGET_PX) so the text is crisp and clearly
+# readable. To make the ID text bigger/smaller RELATIVE to the QR,
+# change CAPTION_FONT_SIZE. To make the whole image bigger, raise
+# QR_TARGET_PX (and CAPTION_FONT_SIZE by the same factor).
+QR_TARGET_PX = 640
+CAPTION_FONT_SIZE = 48
 # =======================================================================
 
 
@@ -69,7 +75,7 @@ def make_qr_image(data, box_size=20, border=2):
     return qr.make_image(fill_color="black", back_color="white").convert("RGB")
 
 
-def label_with_caption(code_img, caption, target_px=320, font_size=CAPTION_FONT_SIZE):
+def label_with_caption(code_img, caption, target_px=QR_TARGET_PX, font_size=CAPTION_FONT_SIZE):
     code_img = code_img.resize((target_px, target_px), Image.NEAREST)
     font = _load_font(font_size)
 
