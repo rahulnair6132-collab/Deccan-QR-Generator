@@ -175,12 +175,18 @@ def make_qr_image(data, box_size=20, border=2):
     return qr.make_image(fill_color="black", back_color="white").convert("RGB")
 
 
-def label_with_caption(code_img, caption, sku="", target_px=QR_TARGET_PX, font_size=CAPTION_FONT_SIZE):
+def label_with_caption(code_img, caption, sku="", target_px=QR_TARGET_PX, 
+                       font_size=CAPTION_FONT_SIZE, font=None):
     """QR with the Insulator ID printed large below it, and (optionally)
     the SKU on a second centered line beneath the ID. The image widens
-    if the text is wider than the QR, so nothing is clipped."""
+    if the text is wider than the QR, so nothing is clipped.
+    
+    PERFORMANCE: pass a pre-loaded `font` to avoid 400x filesystem probes
+    for 400 QRs. If omitted, falls back to loading per call (original behavior).
+    """
     code_img = code_img.resize((target_px, target_px), Image.NEAREST)
-    font = _load_font(font_size)
+    if font is None:
+        font = _load_font(font_size)
 
     measure = ImageDraw.Draw(Image.new("RGB", (10, 10), "white"))
 
@@ -212,6 +218,7 @@ def label_with_caption(code_img, caption, sku="", target_px=QR_TARGET_PX, font_s
         draw.text(((canvas_w - w) / 2, y - top_off), text, fill="black", font=font)
         y += h + line_gap
     return canvas
+   
 
 
 def build_outputs(jobcard, sku, mr_jobs, start=1):
@@ -222,6 +229,11 @@ def build_outputs(jobcard, sku, mr_jobs, start=1):
     Returns: (rows, images, xlsx_bytes, csv_bytes, zip_bytes)
       rows   : list of dicts (InsulatorID, JobCard, MRNo, SKU, QRPayload)
       images : list of (mr, insulator_id, PIL.Image) for preview
+    
+    PERFORMANCE:
+    - Font loaded ONCE outside the loop (was: 400x filesystem lookups)
+    - ZIP uses STORED (was: DEFLATED, wasted CPU on already-compressed PNGs)
+    - PNG save uses compress_level=1 (was: level 6, slow)
     """
     jobcard = jobcard.strip().upper()
     sku = (sku or "").strip()
@@ -229,12 +241,16 @@ def build_outputs(jobcard, sku, mr_jobs, start=1):
     images = []
     n = start
 
+    # Load font ONCE for the whole batch (biggest speed win)
+    cached_font = _load_font(CAPTION_FONT_SIZE)
+
     for mr, qty in mr_jobs:
         mr = mr.strip().upper()
         for _ in range(qty):
             serial = f"{jobcard}-{n:05d}"
             payload = f"{jobcard}|{mr}|{serial}"           # ID + MR in the QR
-            img = label_with_caption(make_qr_image(payload), serial, sku=sku)
+            img = label_with_caption(make_qr_image(payload), serial,
+                                     sku=sku, font=cached_font)
             images.append((mr, serial, img))
             rows.append({
                 "InsulatorID": serial, "JobCard": jobcard, "MRNo": mr,
@@ -263,11 +279,14 @@ def build_outputs(jobcard, sku, mr_jobs, start=1):
     csv_bytes = csv_buf.getvalue().encode("utf-8")
 
     # --- ZIP with the JobCard/MR/image.png folder layout ---
+    # ZIP_STORED: no recompression. PNGs are already compressed so DEFLATE
+    # just burned CPU for ~0% size reduction.
     zip_buf = io.BytesIO()
-    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_STORED) as zf:
         for mr, serial, img in images:
             png_buf = io.BytesIO()
-            img.save(png_buf, format="PNG")
+            # compress_level=1 is fast; compress_level=6 (default) is slow
+            img.save(png_buf, format="PNG", compress_level=1, optimize=False)
             zf.writestr(f"{jobcard}/{mr}/{serial}.png", png_buf.getvalue())
         zf.writestr(f"{jobcard}/{jobcard}_manifest.xlsx", xlsx_bytes)
         zf.writestr(f"{jobcard}/{jobcard}_manifest.csv", csv_bytes)
